@@ -82,11 +82,13 @@ make run      # boot it in QEMU with a serial log on stdout
 ```
 
 On Windows, mingw binutils cannot emit ELF, so use Clang and LLD for both
-halves instead. From the MSYS2 UCRT64 shell:
+halves instead. LLD is a separate package from Clang in MSYS2 and is easy to
+miss — without it the two compile steps succeed and only the kernel link fails.
+From the MSYS2 UCRT64 shell:
 
 ```sh
-pacman -S --needed mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-nasm \
-                   mingw-w64-ucrt-x86_64-qemu make
+pacman -S --needed mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-lld \
+                   mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-qemu make
 cd poc1
 make TOOLCHAIN=clang run-fat
 ```
