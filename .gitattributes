@@ -1,0 +1,3 @@
+# Recipes in a Makefile and shell code break when checked out with CRLF.
+* text=auto eol=lf
+*.docx binary

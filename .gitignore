@@ -1,0 +1,8 @@
+build/
+*.o
+*.efi
+*.elf
+*.img
+*.log
+*.fd
+~$*.docx
