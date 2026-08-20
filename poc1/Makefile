@@ -61,12 +61,16 @@ OVMF_CANDIDATES := /usr/share/OVMF/OVMF_CODE.fd \
                    /usr/share/edk2/ovmf/OVMF_CODE.fd \
                    /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
                    /usr/share/qemu/edk2-x86_64-code.fd \
-                   /opt/homebrew/share/qemu/edk2-x86_64-code.fd
+                   /opt/homebrew/share/qemu/edk2-x86_64-code.fd \
+                   /ucrt64/share/qemu/edk2-x86_64-code.fd \
+                   /mingw64/share/qemu/edk2-x86_64-code.fd
 OVMF_CODE ?= $(firstword $(wildcard $(OVMF_CANDIDATES)))
 OVMF_VARS_CANDIDATES := /usr/share/OVMF/OVMF_VARS.fd \
                         /usr/share/edk2/ovmf/OVMF_VARS.fd \
                         /usr/share/edk2-ovmf/x64/OVMF_VARS.fd \
-                        /usr/share/qemu/edk2-i386-vars.fd
+                        /usr/share/qemu/edk2-i386-vars.fd \
+                        /ucrt64/share/qemu/edk2-i386-vars.fd \
+                        /mingw64/share/qemu/edk2-i386-vars.fd
 OVMF_VARS ?= $(firstword $(wildcard $(OVMF_VARS_CANDIDATES)))
 
 QEMU_FLAGS := -machine q35 -m 512M -cpu qemu64 -net none \
