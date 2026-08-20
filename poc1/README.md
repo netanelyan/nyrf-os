@@ -188,6 +188,13 @@ EDK2 later is a header change and nothing more.
 **POC 1 passes.** All eight goals met on QEMU + OVMF; the table above is the
 evidence for section 3.4 of the research document.
 
+![POC 1 running: the test pattern drawn by our kernel, with the full serial log
+beside it](pocproof.jpeg)
+
+Everything on the right of that screenshot was written by `kernel_main` into the
+framebuffer at `0x80000000`, after `ExitBootServices` — no firmware and no
+operating system involved.
+
 The serial log of a successful run, end to end:
 
 ```
