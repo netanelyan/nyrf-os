@@ -24,8 +24,9 @@ organising constraint is what makes this one its own thing.
 
 ## POC 1
 
-The first proof of concept is complete and lives in [`poc1/`](poc1/), with its
-own README covering the flow, the build and the success criteria.
+The first proof of concept is complete and **passing** on QEMU + OVMF — all
+eight success criteria met, 10 runs out of 10. It lives in [`poc1/`](poc1/),
+with its own README covering the flow, the build and the measured results.
 
 In one line: our own UEFI application comes up on a bare machine, takes the
 screen and the memory map from the firmware, loads an external ELF kernel,

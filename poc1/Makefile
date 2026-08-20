@@ -9,8 +9,12 @@
 #
 # Toolchains:
 #   make                    GNU: mingw-w64 GCC for the EFI side, GCC/ld for ELF
-#   make TOOLCHAIN=clang    Clang/LLD for both, the only option on Windows,
-#                           because mingw binutils cannot emit ELF
+#   make TOOLCHAIN=clang    Clang/LLD for both
+#   make TOOLCHAIN=zig      Clang compiles, Zig links the kernel. This is the
+#                           one that works on Windows: mingw binutils cannot
+#                           emit ELF at all, and the LLD that MSYS2 ships is
+#                           built COFF-only, so neither can link kernel.elf.
+#                           Zig bundles an LLD with the ELF backend included.
 
 TOOLCHAIN ?= gcc
 BUILD     := build
@@ -18,19 +22,38 @@ ESP       := $(BUILD)/esp
 
 NASM  ?= nasm
 QEMU  ?= qemu-system-x86_64
+ZIG   ?= zig
+
+CLANG_EFI  := clang --target=x86_64-unknown-windows
+CLANG_KERN := clang --target=x86_64-unknown-none-elf
 
 ifeq ($(TOOLCHAIN),clang)
-  EFI_CC     := clang --target=x86_64-unknown-windows
-  EFI_LINK    = $(EFI_CC) -nostdlib -fuse-ld=lld \
-                -Wl,-subsystem:efi_application -Wl,-entry:efi_main
-  KERNEL_CC  := clang --target=x86_64-unknown-none-elf
-  KERNEL_LD  := ld.lld
+  EFI_CC      := $(CLANG_EFI)
+  EFI_LINK     = $(EFI_CC) -nostdlib -fuse-ld=lld \
+                 -Wl,-subsystem:efi_application -Wl,-entry:efi_main
+  KERNEL_CC   := $(CLANG_KERN)
+  KERNEL_LINK  = ld.lld -nostdlib -static -no-pie \
+                 -z max-page-size=0x1000 -T kernel/link.ld
+else ifeq ($(TOOLCHAIN),zig)
+  EFI_CC      := $(CLANG_EFI)
+  EFI_LINK     = $(EFI_CC) -nostdlib -fuse-ld=lld \
+                 -Wl,-subsystem:efi_application -Wl,-entry:efi_main
+  KERNEL_CC   := $(CLANG_KERN)
+  # zig cc drives its own bundled LLD, so the linker script and -z go through
+  # -Wl, rather than being passed to the linker directly. The cache directory
+  # is pinned into build/ because zig cannot always work out where AppData is
+  # when it is launched from an MSYS2 make.
+  KERNEL_LINK  = ZIG_GLOBAL_CACHE_DIR=$(BUILD)/.zig-cache \
+                 ZIG_LOCAL_CACHE_DIR=$(BUILD)/.zig-cache \
+                 $(ZIG) cc -target x86_64-freestanding-none -nostdlib -static \
+                 -no-pie -Wl,-T,kernel/link.ld -Wl,-z,max-page-size=0x1000
 else
-  EFI_CC     := x86_64-w64-mingw32-gcc
-  EFI_LINK    = $(EFI_CC) -nostdlib \
-                -Wl,--subsystem,10 -Wl,--entry=efi_main -Wl,--no-insert-timestamp
-  KERNEL_CC  := gcc
-  KERNEL_LD  := ld
+  EFI_CC      := x86_64-w64-mingw32-gcc
+  EFI_LINK     = $(EFI_CC) -nostdlib \
+                 -Wl,--subsystem,10 -Wl,--entry=efi_main -Wl,--no-insert-timestamp
+  KERNEL_CC   := gcc
+  KERNEL_LINK  = ld -nostdlib -static -no-pie \
+                 -z max-page-size=0x1000 -T kernel/link.ld
 endif
 
 # Freestanding in both halves: no libc, no stack protector, and no red zone,
@@ -45,7 +68,6 @@ EFI_CFLAGS := $(COMMON_CFLAGS) -fshort-wchar
 # No SSE in the kernel: the POC never enables it, and letting GCC vectorise the
 # drawing loop would fault on the first xmm instruction.
 KERNEL_CFLAGS := $(COMMON_CFLAGS) -fno-pic -fno-pie -mgeneral-regs-only
-KERNEL_LDFLAGS := -nostdlib -static -no-pie -z max-page-size=0x1000 -T kernel/link.ld
 
 BOOT_SRC   := boot/main.c boot/elf.c boot/serial.c
 BOOT_OBJ   := $(BOOT_SRC:%.c=$(BUILD)/%.efi.o)
@@ -77,6 +99,13 @@ QEMU_FLAGS := -machine q35 -m 512M -cpu qemu64 -net none \
               -drive if=pflash,format=raw,readonly=on,file=$(OVMF_CODE) \
               -drive if=pflash,format=raw,file=$(BUILD)/OVMF_VARS.fd
 
+# QEMU on Windows cannot enumerate a vvfat directory whose path contains
+# non-ASCII characters. It does not report an error either - it just presents
+# an empty volume, and the firmware drops to the UEFI shell. cygpath -ws gives
+# the 8.3 short form of the path, which is always plain ASCII. Off Windows
+# there is no cygpath and the path is used unchanged.
+ESP_QEMU := $(or $(shell cygpath -w -s "$(CURDIR)/$(ESP)" 2>/dev/null),$(ESP))
+
 .PHONY: all run run-fat debug check clean
 .DELETE_ON_ERROR:
 
@@ -104,7 +133,7 @@ $(BUILD)/%.k.o: %.c
 
 $(KERNEL): $(KERNEL_OBJ) kernel/link.ld
 	@mkdir -p $(dir $@)
-	$(KERNEL_LD) $(KERNEL_LDFLAGS) $(KERNEL_OBJ) -o $@
+	$(KERNEL_LINK) $(KERNEL_OBJ) -o $@
 
 # -- ESP layout, shared by both image targets -------------------------------
 
@@ -141,7 +170,7 @@ run: $(IMAGE) $(BUILD)/OVMF_VARS.fd
 
 # Skips parted and mtools by letting QEMU present build/esp as a FAT volume.
 run-fat: esp $(BUILD)/OVMF_VARS.fd
-	$(QEMU) $(QEMU_FLAGS) -drive format=raw,file=fat:rw:$(ESP) -serial stdio
+	$(QEMU) $(QEMU_FLAGS) -drive 'format=raw,file=fat:rw:$(ESP_QEMU)' -serial stdio
 
 debug: $(IMAGE) $(BUILD)/OVMF_VARS.fd
 	@echo "connect with: gdb $(KERNEL) -ex 'target remote :1234'"
