@@ -16,6 +16,12 @@
 #                           built COFF-only, so neither can link kernel.elf.
 #                           Zig bundles an LLD with the ELF backend included.
 
+# Three flavours of assignment appear below, and the difference matters:
+#   ?=  set only if not already set, so the environment or the command line
+#       wins - this is what makes `make TOOLCHAIN=zig` work
+#   :=  evaluated once, here and now
+#   =   evaluated every time it is used, which is why the *_LINK variables
+#       below can be defined before the tools they name are chosen
 TOOLCHAIN ?= gcc
 BUILD     := build
 ESP       := $(BUILD)/esp
@@ -67,13 +73,22 @@ EFI_CFLAGS := $(COMMON_CFLAGS) -fshort-wchar
 
 # No SSE in the kernel: the POC never enables it, and letting GCC vectorise the
 # drawing loop would fault on the first xmm instruction.
-KERNEL_CFLAGS := $(COMMON_CFLAGS) -fno-pic -fno-pie -mgeneral-regs-only
+# KERNEL_CFLAGS_EXTRA is a hook for one-off defines from the command line,
+# without editing this file:
+#   make run-fat KERNEL_CFLAGS_EXTRA=-DNYRF_TEST_FAULT=2
+KERNEL_CFLAGS := $(COMMON_CFLAGS) -fno-pic -fno-pie -mgeneral-regs-only \
+                 $(KERNEL_CFLAGS_EXTRA)
 
 # Globbed, so a new .c or .asm anywhere in the tree needs no edit here.
 #
 # serial.c lives under kernel/dev but is compiled into both halves: it is the
 # only output channel that survives ExitBootServices, so the bootloader needs
 # it too. Two compilations, two ABIs, two object suffixes.
+#
+# The $(SRC:%.c=$(BUILD)/%.o) form is a substitution reference: it rewrites
+# every name in the list, so boot/main.c becomes build/boot/main.efi.o. The
+# object tree therefore mirrors the source tree under build/, which is why the
+# pattern rules below have to mkdir before compiling.
 BOOT_SRC   := $(wildcard boot/*.c) kernel/dev/serial.c
 BOOT_OBJ   := $(BOOT_SRC:%.c=$(BUILD)/%.efi.o)
 
@@ -114,12 +129,28 @@ QEMU_FLAGS := -machine q35 -m 512M -cpu qemu64 -net none \
 # there is no cygpath and the path is used unchanged.
 ESP_QEMU := $(or $(shell cygpath -w -s "$(CURDIR)/$(ESP)" 2>/dev/null),$(ESP))
 
+# .PHONY marks targets that are actions rather than files, so make runs them
+# even if a file of that name ever appears in the directory.
+#
+# .DELETE_ON_ERROR removes a target whose recipe failed partway. Without it a
+# half-written disk image would be left behind looking newer than its sources,
+# and the next make would consider it up to date and boot it.
 .PHONY: all run run-fat debug check clean
 .DELETE_ON_ERROR:
 
 all: $(IMAGE)
 
 # -- bootloader: PE32+, EFI application subsystem ---------------------------
+#
+# The automatic variables in the recipes below are make's shorthand:
+#   $@  the target being built
+#   $<  the first prerequisite (the .c file, in a pattern rule)
+#   $^  all prerequisites (every .o, in the link rules)
+# $(dir $@) is the target's directory, created first because make will not
+# create it and the object tree mirrors the source tree.
+#
+# A PE32+ binary with the EFI application subsystem is what the firmware will
+# load; that is the entire difference between this and an ordinary executable.
 
 $(BUILD)/%.efi.o: %.c
 	@mkdir -p $(dir $@)
@@ -130,6 +161,10 @@ $(EFI_APP): $(BOOT_OBJ)
 	$(EFI_LINK) $^ -o $@
 
 # -- kernel: ELF64, fixed physical address ----------------------------------
+#
+# Note the kernel link rule depends on kernel/link.ld as well as the objects,
+# so editing the layout relinks. The .asm rule runs NASM with -f elf64 to match
+# the C objects; a mismatch there fails at link time rather than at boot.
 
 $(BUILD)/%.asm.o: %.asm
 	@mkdir -p $(dir $@)
@@ -152,6 +187,20 @@ esp: $(EFI_APP) $(KERNEL)
 	cp $(KERNEL) $(ESP)/kernel.elf
 
 # -- GPT disk image with a FAT32 ESP, built without root ---------------------
+#
+# "Without root" is the point: the usual way to build a bootable image is to
+# loop-mount a partition, which needs privileges. Instead the partition is
+# built as a standalone file with mtools (mformat/mmd/mcopy write FAT directly,
+# no mount involved), then dd'd into the right offset of the disk image.
+#
+# The sizes line up deliberately: a 64 MiB disk, a 63 MiB partition, written at
+# a 1 MiB seek - matching the 1MiB start that parted was told to use. Change
+# one and the other two have to follow.
+#
+# The firmware finds the result by convention alone: a GPT disk, a partition
+# flagged esp, a FAT filesystem, and an executable at the hardcoded fallback
+# path /EFI/BOOT/BOOTX64.EFI. No boot entry or NVRAM variable is involved,
+# which is exactly why the image is portable to real hardware.
 
 $(IMAGE): esp
 	dd if=/dev/zero of=$(IMAGE) bs=1M count=64 status=none
@@ -186,6 +235,20 @@ debug: $(IMAGE) $(BUILD)/OVMF_VARS.fd
 
 # Ten consecutive runs, ten successes. A single failure means the
 # code depends on timing - most likely in the memory map refresh loop.
+#
+# This is the POC's consistency criterion, and the reason it is ten runs rather
+# than one: a firmware race shows up as an occasional failure, and a single
+# green run proves nothing about a system whose whole premise is deterministic
+# timing.
+#
+# The recipe is one long shell command - hence the trailing backslashes, which
+# keep it in a single shell so that $$pass survives across the loop. $$ is an
+# escaped $, passed through to the shell rather than expanded by make.
+#
+# -display none makes it headless, and the serial log goes to a file per run.
+# `|| true` swallows the timeout's exit status so one hung run does not abort
+# the loop; the grep for the kernel's last line is the real verdict, and the
+# final `test` is what sets the exit code make reports.
 check: $(IMAGE) $(BUILD)/OVMF_VARS.fd
 	@pass=0; \
 	for i in 1 2 3 4 5 6 7 8 9 10; do \
