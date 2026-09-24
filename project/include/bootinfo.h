@@ -65,11 +65,10 @@ typedef struct {
     uint32_t stride;       /* PixelsPerScanLine, padding included           */
     uint32_t pixel_format; /* one of NYRF_PIXEL_*                           */
 
-    /* Memory map, kept for the future physical memory manager.
+    /* Memory map, the input to the physical memory manager (kernel/mm/pmm.c).
      *
-     * Collected but unused: nothing allocates in POC 1. It is here because
-     * this is the last moment it can be obtained at all, and the memory
-     * manager is the next roadmap item after descriptor tables.
+     * Collected here because this is the last moment it can be obtained at
+     * all: once boot services are gone, nothing can be asked for it again.
      *
      * The buffer these point at is EfiLoaderData, so it survives the firmware
      * being torn down. */

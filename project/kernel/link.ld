@@ -32,6 +32,10 @@ SECTIONS
      * 1 MiB instead of the default base. */
     . = KERNEL_PHYS_BASE;
 
+    /* The first byte of the image. With __kernel_end below, this brackets
+     * the pages kernel/mm/pmm.c must never hand out. */
+    __kernel_start = .;
+
     /* Each ALIGN(4K) rounds the location counter up to a page boundary, so
      * that no two sections share a page. Nothing enforces permissions yet -
      * there is no MMU configuration of our own - but it keeps the segments
@@ -69,9 +73,8 @@ SECTIONS
         __bss_end = .;
     }
 
-    /* The first free address above the kernel. The physical memory manager on
-     * the roadmap will want this: it marks where the kernel image stops and
-     * allocatable memory can begin. */
+    /* The first free address above the kernel. kernel/mm/pmm.c reserves
+     * everything from __kernel_start up to here. */
     __kernel_end = .;
 
     /* Nothing here is needed at runtime, and dropping it keeps the image and

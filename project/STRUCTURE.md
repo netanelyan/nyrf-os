@@ -32,14 +32,19 @@ project/
 ├── include/                      headers shared across the two halves
 │   ├── bootinfo.h                THE handoff contract (read this first)
 │   ├── uefi.h                    vendored UEFI types/protocols we touch
-│   └── kernel/serial.h           UART logging API (used by both halves)
+│   └── kernel/                   kernel headers: serial.h (used by both
+│                                 halves), gdt.h, tss.h, idt.h, pmm.h
 ├── boot/                         the UEFI application — runs first
 │   ├── main.c                    efi_main, boot stages 0-5, the jump
 │   ├── elf.c                     ELF64 parse + PT_LOAD placement
 │   └── elf.h                     one function: elf_load_kernel()
 └── kernel/                       the ELF kernel — runs after the jump
     ├── arch/x86_64/entry.asm     _start: stack setup, then call into C
-    ├── main.c                    kernel_main: draws the test pattern, halts
+    ├── arch/x86_64/gdt.c, tss.c  our own GDT and TSS (IST1 for #DF)
+    ├── arch/x86_64/idt.c, isr.asm  exception stubs + register dump
+    ├── main.c                    kernel_main: tables, memory, test pattern, halt
+    ├── mm/pmm.c                  physical memory manager (bitmap, 4 KiB pages)
+    ├── lib/string.c              memset/memcpy the compiler may emit calls to
     ├── dev/serial.c              16550 UART driver (compiled into BOTH halves)
     └── link.ld                   fixed load address 0x100000, section layout
 ```
@@ -162,9 +167,37 @@ pattern, then halt. The pattern is chosen to fail visibly:
 A single filled rectangle would have caught neither. `pack()` handles both byte
 orders so the kernel never needs `uefi.h`.
 
-No GDT, no IDT, no paging, no allocator, no scheduler — all of those sit *above*
-a kernel that has already booted, which is exactly what this POC proves is
-possible.
+Since the POC it also loads its own GDT, TSS and IDT and brings up the
+physical memory manager before drawing. Still no paging of its own and no
+scheduler.
+
+## `kernel/mm/pmm.c` — physical memory manager
+
+A bitmap, one bit per 4 KiB page, 1 = used, built from the UEFI memory map in
+`boot_info_t`. 16 KiB of bitmap covers 512 MiB.
+
+- **Sized by RAM, not by the map.** The map on QEMU runs to 13 GiB because of
+  PCI windows; the bitmap covers only up to the highest conventional /
+  boot-services / loader-code page.
+- **Starts all-used, carves out free.** Only `EfiConventionalMemory` is marked
+  free. Boot-services memory is covered but stays reserved: it holds the page
+  tables the CPU is still using. Reclaiming it is part of the paging step.
+- **Always reserved:** the first MiB (so page 0 is never handed out, `0` can
+  mean "out of memory", and an SMP trampoline has somewhere to go later), the
+  kernel image (`__kernel_start`..`__kernel_end` from `link.ld`), and the
+  bitmap's own pages.
+- **Allocation is next-fit over 64-bit words**, skipping full words in one
+  compare and finding a free bit with `ctz`. Still a scan, so its cost depends
+  on memory state — acceptable while nothing timing-critical allocates, and
+  the thing to replace (free list / pools on top of the bitmap) when something
+  does.
+- **`pmm_free_page` halts** on an unaligned address, an address outside tracked
+  memory, or a double free.
+- `pmm_self_test` runs on every boot (allocate 3, write/read a tag, free,
+  check the count), so `make check` covers the allocator too.
+
+Physical addresses are usable as pointers only because the firmware's identity
+map is still live. That stops being true at the paging step.
 
 ## `kernel/dev/serial.c` — 16550 UART on COM1
 
@@ -220,8 +253,8 @@ Two toolchain paths per half, selected by `TOOLCHAIN=gcc|clang|zig`:
 
 ## Where the next work goes
 
-Per the roadmap, in order: GDT/IDT → physical memory manager → Local APIC timer.
-The tree already anticipates this — `kernel/arch/x86_64/` is where descriptor
-tables belong, `kernel/dev/` is where the timer driver goes, and `boot_info_t`
-already carries the memory map and RSDP those two need. Neither requires
-touching the bootloader.
+Done: GDT/TSS/IDT, physical memory manager. Next, in order: our own page
+tables (built from `pmm_alloc_page`, after which boot-services memory can be
+reclaimed) → Local APIC timer. `kernel/dev/` is where the timer driver goes,
+and `boot_info_t` already carries the RSDP it needs. Neither requires touching
+the bootloader.

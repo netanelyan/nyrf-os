@@ -28,6 +28,7 @@
 #include <stddef.h>
 #include <kernel/gdt.h>     /* next to the serial.h include */
 #include <kernel/idt.h>
+#include <kernel/pmm.h>
 
 /* Deliberate fault, to prove the exception path actually runs.
  *
@@ -105,14 +106,18 @@ void kernel_main(boot_info_t *bi)
     idt_init();
 
 #if NYRF_TEST_FAULT == 1
-    /* volatile on both sides so the compiler cannot fold the division away at
-     * compile time, or warn about it, and has to emit a real idiv. */
+    /* The div has to be written in asm. In C, dividing by zero is undefined
+     * behaviour, so the compiler may assume the divisor is never zero - and
+     * clang does: even through volatile, it turns 1 / x into a compare and a
+     * cmov (1 / x is 1 for x == 1, -1 for x == -1, else 0) and emits no
+     * divide instruction at all. The kernel then carries on and the handler
+     * never runs. */
     serial_puts("[kern]  provoking a divide by zero\n");
-    {
-        volatile int zero = 0;
-        volatile int result = 1 / zero;
-        (void)result;
-    }
+    __asm__ __volatile__("xorl %%ecx, %%ecx\n\t"
+                         "movl $1, %%eax\n\t"
+                         "xorl %%edx, %%edx\n\t"
+                         "divl %%ecx"
+                         ::: "eax", "ecx", "edx");
 #elif NYRF_TEST_FAULT == 2
     /* 2^46: canonical, so the CPU will try to translate it rather than
      * rejecting the address outright as a #GP, and far beyond anything the
@@ -133,6 +138,17 @@ void kernel_main(boot_info_t *bi)
             __asm__ __volatile__("hlt");
         }
     }
+
+    /* Roadmap step 3: take ownership of RAM. After the magic check rather
+     * than with the descriptor tables above, because unlike them it reads bi
+     * - and it trusts mmap_ptr enough to write a bitmap wherever the map says
+     * there is free memory.
+     *
+     * The self-test runs on every boot: three allocations and three frees,
+     * well under a millisecond, and make check then covers the allocator for
+     * free. */
+    pmm_init(bi);
+    pmm_self_test();
 
     serial_printf("[kern]  fb=%x %ux%u stride=%u\n",
                   bi->fb_base, (uint64_t)bi->width,
